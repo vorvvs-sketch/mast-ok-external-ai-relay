@@ -17,7 +17,7 @@ AI_API_KEY=
 AI_MODEL=gpt-4.1-mini
 AI_API_URL=https://api.openai.com/v1/chat/completions
 AI_TIMEOUT=30
-MAX_UPLOAD_MB=8
+MAX_UPLOAD_MB=20
 CATALOG_PATH=./catalog.json
 ```
 
@@ -37,6 +37,8 @@ Put these files in the root of a separate GitHub repository:
 - `README.md`
 - `render.yaml`
 - `catalog.json`
+- `test-cases.json`
+- `evaluate.py`
 
 Then in Render:
 
@@ -67,3 +69,12 @@ EXTERNAL_AI_BEARER_TOKEN=
 ```
 
 Then restart `mast-ok-backend`.
+
+## Quality check
+
+You can run a simple relay quality check against local or remote endpoint:
+
+```powershell
+$env:RELAY_ENDPOINT='https://your-relay-domain.example.com/api/diagnose'
+python evaluate.py
+```

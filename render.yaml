@@ -14,7 +14,7 @@ services:
       - key: AI_TIMEOUT
         value: "30"
       - key: MAX_UPLOAD_MB
-        value: "8"
+        value: "20"
       - key: CATALOG_PATH
         value: ./catalog.json
       - key: AI_API_KEY

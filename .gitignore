@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+deploy_key
+deploy_key.pub
+tmp_*
