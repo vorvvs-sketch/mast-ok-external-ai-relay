@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: mast-ok-external-ai-relay
+    runtime: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AI_MODEL
+        value: gpt-4.1-mini
+      - key: AI_API_URL
+        value: https://api.openai.com/v1/chat/completions
+      - key: AI_TIMEOUT
+        value: "30"
+      - key: MAX_UPLOAD_MB
+        value: "8"
+      - key: CATALOG_PATH
+        value: ./catalog.json
+      - key: AI_API_KEY
+        sync: false
