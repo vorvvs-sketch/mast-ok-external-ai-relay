@@ -14,7 +14,7 @@ What it does:
 
 ```text
 AI_API_KEY=
-AI_MODEL=gpt-4.1-mini
+AI_MODEL=gpt-5-mini
 AI_API_URL=https://api.openai.com/v1/chat/completions
 AI_TIMEOUT=30
 MAX_UPLOAD_MB=20

@@ -16,7 +16,7 @@ from pydantic import BaseModel
 BASE_DIR = Path(__file__).resolve().parent
 CATALOG_PATH = Path(os.environ.get("CATALOG_PATH", str(BASE_DIR / "catalog.json")))
 AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
-AI_MODEL = os.environ.get("AI_MODEL", "gpt-4.1-mini").strip()
+AI_MODEL = os.environ.get("AI_MODEL", "gpt-5-mini").strip()
 AI_API_URL = os.environ.get("AI_API_URL", "https://api.openai.com/v1/chat/completions").strip()
 AI_TIMEOUT = int(os.environ.get("AI_TIMEOUT", "30"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
