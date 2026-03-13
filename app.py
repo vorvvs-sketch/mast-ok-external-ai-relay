@@ -4,6 +4,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 from urllib import error, request
 
@@ -110,6 +111,41 @@ FLAT_CATALOG = [
 ]
 CATALOG_BY_NAME = {service["name"]: service for service in FLAT_CATALOG}
 CATALOG_NAMES = [service["name"] for service in FLAT_CATALOG]
+SERVICE_SEARCH_INDEX = [
+    {
+        "name": service["name"],
+        "category": service["category"],
+        "search_blob": repair_text(f'{service["category"]} {service["name"]}').lower(),
+    }
+    for service in FLAT_CATALOG
+]
+
+
+def normalize_query(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s-]+", " ", repair_text(value).lower())).strip()
+
+
+def shortlist_services(text: str, limit: int = 28) -> list[str]:
+    normalized = normalize_query(text)
+    if not normalized:
+        return CATALOG_NAMES[:limit]
+
+    parts = [part for part in normalized.split(" ") if len(part) > 1]
+    scored: list[tuple[int, str]] = []
+    for item in SERVICE_SEARCH_INDEX:
+        blob = item["search_blob"]
+        score = 0
+        for part in parts:
+            if part in blob:
+                score += 3
+            elif any(word.startswith(part) for word in blob.split()):
+                score += 1
+        if score:
+            scored.append((score, item["name"]))
+
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    names = [name for _, name in scored[:limit]]
+    return names or CATALOG_NAMES[:limit]
 
 
 def build_matches(service_names: list[str], reason: str) -> list[ServiceMatch]:
@@ -149,7 +185,7 @@ def category_guide_text() -> str:
 
 def examples_text() -> str:
     blocks = []
-    for item in FEW_SHOT_EXAMPLES:
+    for item in FEW_SHOT_EXAMPLES[:2]:
         blocks.append(
             json.dumps(
                 {
@@ -209,6 +245,41 @@ def build_messages(text: str, photo_bytes: bytes | None = None, content_type: st
     ]
 
 
+def build_messages_fast(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> list[dict[str, Any]]:
+    candidate_names = shortlist_services(text)
+    system_prompt = (
+        "Ты помощник сайта частного мастера по дому в Краснодаре.\n"
+        "Подбирай 2-4 реальные услуги только из переданного списка.\n"
+        "Отвечай спокойно, коротко и честно. Не ставь точный диагноз без осмотра.\n"
+        "Если есть риск, советуй только безопасные действия: перекрыть воду, отключить питание, не пользоваться узлом.\n"
+        "Если фото неинформативно, прямо скажи об этом и попроси другой ракурс.\n"
+        "Не выдумывай услуги и не меняй их названия.\n"
+        "Верни только JSON вида "
+        '{"reason":"...","clarifying_question":"...","service_names":["...","..."]}.'
+    )
+    user_text = (
+        f"Кандидаты услуг: {json.dumps(candidate_names, ensure_ascii=False)}\n"
+        f"Подсказка по категориям:\n{category_guide_text()}\n"
+        f"Короткие примеры:\n{examples_text()}\n"
+        f"Описание клиента: {repair_text(text)}"
+    )
+    if photo_bytes is None or not content_type:
+        user_content: Any = user_text
+    else:
+        encoded_photo = base64.b64encode(photo_bytes).decode("ascii")
+        user_content = [
+            {"type": "text", "text": user_text},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{content_type};base64,{encoded_photo}"},
+            },
+        ]
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+
 def normalize_reason(reason: str, matches: list[ServiceMatch]) -> str:
     clean_reason = " ".join((reason or "").split())
     if not clean_reason:
@@ -232,8 +303,9 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
     payload = {
         "model": AI_MODEL,
         "temperature": 0.1,
+        "max_tokens": 350,
         "response_format": {"type": "json_object"},
-        "messages": build_messages(text, photo_bytes=photo_bytes, content_type=content_type),
+        "messages": build_messages_fast(text, photo_bytes=photo_bytes, content_type=content_type),
     }
     req = request.Request(
         AI_API_URL,
