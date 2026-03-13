@@ -119,6 +119,24 @@ SERVICE_SEARCH_INDEX = [
     }
     for service in FLAT_CATALOG
 ]
+PRIORITY_SERVICE_RULES = [
+    {
+        "keywords": ["смесител", "капает", "кран"],
+        "services": ["Ремонт смесителя", "Замена картриджа смесителя", "Замена смесителя"],
+    },
+    {
+        "keywords": ["балкон", "двер", "дует", "ручк"],
+        "services": ["Регулировка балконной двери", "Ремонт ручки балкона", "Замена уплотнителя двери"],
+    },
+    {
+        "keywords": ["стирал", "машин", "подключ", "после переезд"],
+        "services": ["Установка стиральной машины", "Замена подводки воды", "Установка розетки для техники"],
+    },
+    {
+        "keywords": ["осмотр", "квартир", "целиком", "провер", "розетк", "окн"],
+        "services": ["Технический осмотр квартиры", "Проверка сантехники", "Проверка электрики", "Проверка техники"],
+    },
+]
 
 
 def normalize_query(value: str) -> str:
@@ -129,6 +147,13 @@ def shortlist_services(text: str, limit: int = 28) -> list[str]:
     normalized = normalize_query(text)
     if not normalized:
         return CATALOG_NAMES[:limit]
+
+    prioritized: list[str] = []
+    for rule in PRIORITY_SERVICE_RULES:
+        if all(keyword in normalized for keyword in rule["keywords"][:2]) or sum(
+            1 for keyword in rule["keywords"] if keyword in normalized
+        ) >= 2:
+            prioritized.extend(name for name in rule["services"] if name in CATALOG_BY_NAME)
 
     parts = [part for part in normalized.split(" ") if len(part) > 1]
     scored: list[tuple[int, str]] = []
@@ -144,7 +169,18 @@ def shortlist_services(text: str, limit: int = 28) -> list[str]:
             scored.append((score, item["name"]))
 
     scored.sort(key=lambda row: (-row[0], row[1]))
-    names = [name for _, name in scored[:limit]]
+    names = []
+    seen: set[str] = set()
+    for name in prioritized:
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    for _, name in scored:
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+        if len(names) >= limit:
+            break
     return names or CATALOG_NAMES[:limit]
 
 
@@ -202,6 +238,20 @@ def examples_text() -> str:
     return "\n".join(blocks)
 
 
+def priority_hints_text(text: str) -> str:
+    normalized = normalize_query(text)
+    hints: list[str] = []
+    if "смесител" in normalized and ("капает" in normalized or "теч" in normalized):
+        hints.append("Если капает смеситель, приоритет: Ремонт смесителя, Замена картриджа смесителя, Замена смесителя. Не выбирать установку смесителя без запроса на монтаж.")
+    if "балкон" in normalized and "двер" in normalized:
+        hints.append("Если проблема с балконной дверью, приоритет: Регулировка балконной двери, Ремонт ручки балкона, Замена уплотнителя двери.")
+    if "стирал" in normalized and "машин" in normalized and ("подключ" in normalized or "переезд" in normalized):
+        hints.append("Если нужно подключить стиральную машину, приоритет: Установка стиральной машины.")
+    if ("осмотр" in normalized or "целиком" in normalized) and "квартир" in normalized:
+        hints.append("Если клиент просит посмотреть квартиру целиком, приоритет: Технический осмотр квартиры, Проверка сантехники, Проверка электрики, Проверка техники.")
+    return "\n".join(f"- {hint}" for hint in hints)
+
+
 def build_messages(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> list[dict[str, Any]]:
     system_prompt = (
         "Ты помощник сайта частного мастера по дому в Краснодаре.\n"
@@ -228,6 +278,8 @@ def build_messages(text: str, photo_bytes: bytes | None = None, content_type: st
         f"Примеры хороших ответов:\n{examples_text()}\n"
         f"Описание проблемы клиента: {text}"
     )
+    if priority_hints:
+        user_text = f"{user_text}\nPriority hints:\n{priority_hints}"
     if photo_bytes is None or not content_type:
         user_content: Any = user_text
     else:
@@ -247,6 +299,7 @@ def build_messages(text: str, photo_bytes: bytes | None = None, content_type: st
 
 def build_messages_fast(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> list[dict[str, Any]]:
     candidate_names = shortlist_services(text)
+    priority_hints = priority_hints_text(text)
     system_prompt = (
         "Ты помощник сайта частного мастера по дому в Краснодаре.\n"
         "Подбирай 2-4 реальные услуги только из переданного списка.\n"
