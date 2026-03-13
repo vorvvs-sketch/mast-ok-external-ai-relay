@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 from urllib import error, request
 
@@ -137,6 +138,23 @@ PRIORITY_SERVICE_RULES = [
         "services": ["Технический осмотр квартиры", "Проверка сантехники", "Проверка электрики", "Проверка техники"],
     },
 ]
+POSTPROCESS_SERVICE_RULES = [
+    {
+        "keywords": ["смесител", "капает"],
+        "services": ["Ремонт смесителя", "Замена картриджа смесителя", "Замена смесителя"],
+        "exclude": ["Установка кухонного смесителя", "Установка смесителя в ванной"],
+    },
+    {
+        "keywords": ["балкон", "двер"],
+        "services": ["Регулировка балконной двери", "Ремонт ручки балкона", "Замена уплотнителя двери"],
+        "exclude": ["Замена ручки двери", "Регулировка двери", "Замена уплотнителя"],
+    },
+    {
+        "keywords": ["стирал", "машин"],
+        "services": ["Установка стиральной машины"],
+        "exclude": ["Монтаж розеток после ремонта", "Навеска аксессуаров после ремонта"],
+    },
+]
 
 
 def normalize_query(value: str) -> str:
@@ -202,6 +220,25 @@ def build_matches(service_names: list[str], reason: str) -> list[ServiceMatch]:
             )
         )
     return matches
+
+
+def refine_service_names(text: str, service_names: list[str]) -> list[str]:
+    normalized = normalize_query(text)
+    refined = [name for name in service_names if name in CATALOG_BY_NAME]
+    for rule in POSTPROCESS_SERVICE_RULES:
+        if sum(1 for keyword in rule["keywords"] if keyword in normalized) < len(rule["keywords"]):
+            continue
+        refined = [name for name in refined if name not in rule["exclude"]]
+        for name in reversed(rule["services"]):
+            if name in CATALOG_BY_NAME and name not in refined:
+                refined.insert(0, name)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in refined:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered[:4]
 
 
 def extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -278,6 +315,8 @@ def build_messages(text: str, photo_bytes: bytes | None = None, content_type: st
         f"Примеры хороших ответов:\n{examples_text()}\n"
         f"Описание проблемы клиента: {text}"
     )
+    if priority_hints:
+        user_text = f"{user_text}\nPriority hints:\n{priority_hints}"
     if priority_hints:
         user_text = f"{user_text}\nPriority hints:\n{priority_hints}"
     if photo_bytes is None or not content_type:
@@ -369,14 +408,25 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
         },
         method="POST",
     )
-    try:
-        with request.urlopen(req, timeout=AI_TIMEOUT) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=502, detail=f"OpenAI HTTP error: {detail}") from exc
-    except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=502, detail="OpenAI request failed.") from exc
+    body: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with request.urlopen(req, timeout=AI_TIMEOUT) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            break
+        except error.HTTPError as exc:
+            last_error = exc
+            if exc.code < 500 or attempt == 1:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise HTTPException(status_code=502, detail=f"OpenAI HTTP error: {detail}") from exc
+        except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt == 1:
+                raise HTTPException(status_code=502, detail="OpenAI request failed.") from exc
+        time.sleep(1)
+    if body is None and last_error is not None:
+        raise HTTPException(status_code=502, detail="OpenAI request failed.") from last_error
 
     try:
         content = body["choices"][0]["message"]["content"]
@@ -384,6 +434,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
         service_names = [
             name for name in parsed.get("service_names", []) if isinstance(name, str) and name in CATALOG_BY_NAME
         ]
+        service_names = refine_service_names(text, service_names)
         if not service_names:
             raise HTTPException(status_code=502, detail="OpenAI returned no usable service names.")
         matches = build_matches(service_names, "Подходит по вашему описанию.")[:4]
