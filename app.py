@@ -388,6 +388,28 @@ def normalize_question(question: str | None) -> str | None:
     return clean_question
 
 
+def fallback_diagnose(text: str, photo_attached: bool = False) -> DiagnoseResponse:
+    service_names = refine_service_names(text, shortlist_services(text, limit=4))
+    matches = build_matches(service_names, "Подходит по вашему описанию.")[:4]
+    if not matches:
+        return DiagnoseResponse(
+            source="fallback",
+            reason="Пока ориентир общий, но можно уточнить задачу и я подберу более точный вариант.",
+            clarifying_question="Что именно не работает, течет, искрит или что нужно установить?",
+            matches=[],
+        )
+    reason = "Похоже, это один из подходящих вариантов по вашему описанию."
+    if photo_attached:
+        reason = "Посмотрел фото и описание. Похоже, это один из подходящих вариантов по вашей задаче."
+    reason = f"{reason} Обычно такие работы начинаются от {matches[0].price_from} ₽."
+    return DiagnoseResponse(
+        source="fallback",
+        reason=reason,
+        clarifying_question="Если удобно, пришлите еще один ракурс или коротко уточните, когда именно появляется проблема.",
+        matches=matches,
+    )
+
+
 def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> DiagnoseResponse:
     if not AI_API_KEY:
         raise HTTPException(status_code=500, detail="AI_API_KEY is not configured.")
@@ -418,15 +440,14 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
         except error.HTTPError as exc:
             last_error = exc
             if exc.code < 500 or attempt == 1:
-                detail = exc.read().decode("utf-8", errors="replace")
-                raise HTTPException(status_code=502, detail=f"OpenAI HTTP error: {detail}") from exc
+                return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
             if attempt == 1:
-                raise HTTPException(status_code=502, detail="OpenAI request failed.") from exc
+                return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         time.sleep(1)
     if body is None and last_error is not None:
-        raise HTTPException(status_code=502, detail="OpenAI request failed.") from last_error
+        return fallback_diagnose(text, photo_attached=photo_bytes is not None)
 
     try:
         content = body["choices"][0]["message"]["content"]
@@ -436,7 +457,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
         ]
         service_names = refine_service_names(text, service_names)
         if not service_names:
-            raise HTTPException(status_code=502, detail="OpenAI returned no usable service names.")
+            return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         matches = build_matches(service_names, "Подходит по вашему описанию.")[:4]
         return DiagnoseResponse(
             source="external-ai",
@@ -444,8 +465,8 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
             clarifying_question=normalize_question(parsed.get("clarifying_question")),
             matches=matches,
         )
-    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=502, detail="Failed to parse OpenAI response.") from exc
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return fallback_diagnose(text, photo_attached=photo_bytes is not None)
 
 
 async def read_upload_bytes(photo: UploadFile) -> bytes:
