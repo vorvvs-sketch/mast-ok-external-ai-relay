@@ -280,6 +280,40 @@ def extract_json_object(raw_text: str) -> dict[str, Any]:
     return json.loads(raw_text[start : end + 1])
 
 
+def extract_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+    return ""
+
+
+def build_ai_assisted_response(
+    text: str,
+    parsed: dict[str, Any],
+    photo_attached: bool = False,
+) -> DiagnoseResponse:
+    raw_service_names = parsed.get("service_names")
+    service_names = refine_service_names(text, raw_service_names if isinstance(raw_service_names, list) else [])
+    if not service_names:
+        service_names = refine_service_names(text, shortlist_services(text, limit=4))
+    if not service_names:
+        return fallback_diagnose(text, photo_attached=photo_attached)
+    matches = build_matches(service_names, "Подходит по вашему описанию.")[:4]
+    return DiagnoseResponse(
+        source="external-ai",
+        reason=normalize_reason(str(parsed.get("reason", "")), matches),
+        clarifying_question=normalize_question(parsed.get("clarifying_question")),
+        matches=matches,
+    )
+
+
 def category_guide_text() -> str:
     parts = []
     for category, hints in CATEGORY_GUIDE.items():
@@ -471,33 +505,58 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
             break
         except error.HTTPError as exc:
             last_error = exc
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = "<unavailable>"
+            print(
+                f"[relay] OpenAI HTTPError attempt={attempt + 1} code={exc.code} "
+                f"url={AI_API_URL} body={error_body[:1200]}",
+                flush=True,
+            )
             if exc.code < 500 or attempt == 1:
                 return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             last_error = exc
+            print(
+                f"[relay] OpenAI request error attempt={attempt + 1} type={type(exc).__name__} "
+                f"detail={exc}",
+                flush=True,
+            )
             if attempt == 1:
                 return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         time.sleep(1)
     if body is None and last_error is not None:
+        print(
+            f"[relay] OpenAI unavailable after retries type={type(last_error).__name__} detail={last_error}",
+            flush=True,
+        )
         return fallback_diagnose(text, photo_attached=photo_bytes is not None)
 
     try:
-        content = body["choices"][0]["message"]["content"]
+        content = extract_message_text(body["choices"][0]["message"]["content"])
         parsed = extract_json_object(content)
-        service_names = [
-            name for name in parsed.get("service_names", []) if isinstance(name, str) and name in CATALOG_BY_NAME
-        ]
-        service_names = refine_service_names(text, service_names)
-        if not service_names:
-            return fallback_diagnose(text, photo_attached=photo_bytes is not None)
-        matches = build_matches(service_names, "Подходит по вашему описанию.")[:4]
-        return DiagnoseResponse(
-            source="external-ai",
-            reason=normalize_reason(str(parsed.get("reason", "")), matches),
-            clarifying_question=normalize_question(parsed.get("clarifying_question")),
-            matches=matches,
+        response = build_ai_assisted_response(
+            text,
+            parsed,
+            photo_attached=photo_bytes is not None,
         )
-    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        print(
+            f"[relay] OpenAI success source={response.source} matches={[match.name for match in response.matches]}",
+            flush=True,
+        )
+        return response
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        snippet = ""
+        try:
+            snippet = json.dumps(body, ensure_ascii=False)[:1200]
+        except Exception:
+            snippet = "<unavailable>"
+        print(
+            f"[relay] OpenAI parse error type={type(exc).__name__} detail={exc} body={snippet}",
+            flush=True,
+        )
         return fallback_diagnose(text, photo_attached=photo_bytes is not None)
 
 
