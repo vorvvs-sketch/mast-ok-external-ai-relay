@@ -13,7 +13,7 @@ What it does:
 ## Env
 
 ```text
-AI_API_KEY=
+OPENAI_API_KEY=
 AI_MODEL=gpt-5-mini
 AI_API_URL=https://api.openai.com/v1/chat/completions
 AI_TIMEOUT=30
@@ -45,7 +45,7 @@ Then in Render:
 1. Push the repository to GitHub.
 2. Create a new Render Blueprint from that repository.
 3. Confirm deployment of `mast-ok-external-ai-relay`.
-4. Set secret env var `AI_API_KEY`.
+4. Set secret env var `OPENAI_API_KEY`.
 5. Wait for deploy and open:
 
 ```text

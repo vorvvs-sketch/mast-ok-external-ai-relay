@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
 CATALOG_PATH = Path(os.environ.get("CATALOG_PATH", str(BASE_DIR / "catalog.json")))
-AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
+AI_API_KEY = (os.environ.get("OPENAI_API_KEY") or os.environ.get("AI_API_KEY") or "").strip()
 AI_MODEL = os.environ.get("AI_MODEL", "gpt-5-mini").strip()
 AI_API_URL = os.environ.get("AI_API_URL", "https://api.openai.com/v1/chat/completions").strip()
 AI_TIMEOUT = int(os.environ.get("AI_TIMEOUT", "30"))
@@ -225,6 +225,37 @@ def build_matches(service_names: list[str], reason: str) -> list[ServiceMatch]:
 def refine_service_names(text: str, service_names: list[str]) -> list[str]:
     normalized = normalize_query(text)
     refined = [name for name in service_names if name in CATALOG_BY_NAME]
+
+    if len(refined) != len(service_names):
+        catalog_index = {
+            name: normalize_query(name)
+            for name in CATALOG_NAMES
+        }
+        for raw_name in service_names:
+            if raw_name in CATALOG_BY_NAME:
+                continue
+            normalized_raw = normalize_query(raw_name)
+            if not normalized_raw:
+                continue
+            candidates: list[tuple[int, str]] = []
+            raw_parts = [part for part in normalized_raw.split() if len(part) >= 4]
+            for catalog_name, normalized_catalog in catalog_index.items():
+                score = 0
+                if normalized_raw == normalized_catalog:
+                    score += 100
+                if normalized_raw in normalized_catalog or normalized_catalog in normalized_raw:
+                    score += 40
+                for part in raw_parts:
+                    if part in normalized_catalog:
+                        score += 12
+                if score:
+                    candidates.append((score, catalog_name))
+            if candidates:
+                candidates.sort(key=lambda item: (-item[0], item[1]))
+                best_name = candidates[0][1]
+                if best_name not in refined:
+                    refined.append(best_name)
+
     for rule in POSTPROCESS_SERVICE_RULES:
         if sum(1 for keyword in rule["keywords"] if keyword in normalized) < len(rule["keywords"]):
             continue
@@ -290,6 +321,7 @@ def priority_hints_text(text: str) -> str:
 
 
 def build_messages(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> list[dict[str, Any]]:
+    priority_hints = priority_hints_text(text)
     system_prompt = (
         "Ты помощник сайта частного мастера по дому в Краснодаре.\n"
         "Твоя задача: по описанию бытовой проблемы подобрать 2-4 реальные услуги из переданного каталога.\n"
@@ -315,8 +347,6 @@ def build_messages(text: str, photo_bytes: bytes | None = None, content_type: st
         f"Примеры хороших ответов:\n{examples_text()}\n"
         f"Описание проблемы клиента: {text}"
     )
-    if priority_hints:
-        user_text = f"{user_text}\nPriority hints:\n{priority_hints}"
     if priority_hints:
         user_text = f"{user_text}\nPriority hints:\n{priority_hints}"
     if photo_bytes is None or not content_type:
@@ -355,6 +385,8 @@ def build_messages_fast(text: str, photo_bytes: bytes | None = None, content_typ
         f"Короткие примеры:\n{examples_text()}\n"
         f"Описание клиента: {repair_text(text)}"
     )
+    if priority_hints:
+        user_text = f"{user_text}\nPriority hints:\n{priority_hints}"
     if photo_bytes is None or not content_type:
         user_content: Any = user_text
     else:
@@ -412,7 +444,7 @@ def fallback_diagnose(text: str, photo_attached: bool = False) -> DiagnoseRespon
 
 def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> DiagnoseResponse:
     if not AI_API_KEY:
-        raise HTTPException(status_code=500, detail="AI_API_KEY is not configured.")
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured.")
 
     payload = {
         "model": AI_MODEL,
@@ -489,6 +521,8 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "ai_configured": bool(AI_API_KEY),
         "catalog_services": len(FLAT_CATALOG),
+        "ai_model": AI_MODEL,
+        "max_upload_mb": MAX_UPLOAD_MB,
     }
 
 
