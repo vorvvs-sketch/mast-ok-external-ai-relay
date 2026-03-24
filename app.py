@@ -21,6 +21,12 @@ AI_API_URL = os.environ.get("AI_API_URL", "https://api.openai.com/v1/chat/comple
 AI_TIMEOUT = int(os.environ.get("AI_TIMEOUT", "30"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "20"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+RELAY_VERSION = os.environ.get("RELAY_VERSION", "2026-03-24-02").strip() or "2026-03-24-02"
+LAST_OPENAI_STATUS: dict[str, Any] = {
+    "state": "idle",
+    "detail": "",
+    "updated_at": None,
+}
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -354,6 +360,14 @@ def priority_hints_text(text: str) -> str:
     return "\n".join(f"- {hint}" for hint in hints)
 
 
+
+
+def mark_openai_status(state: str, detail: str = "") -> None:
+    LAST_OPENAI_STATUS["state"] = state
+    LAST_OPENAI_STATUS["detail"] = detail[:1200]
+    LAST_OPENAI_STATUS["updated_at"] = int(time.time())
+
+
 def build_messages(text: str, photo_bytes: bytes | None = None, content_type: str | None = None) -> list[dict[str, Any]]:
     priority_hints = priority_hints_text(text)
     system_prompt = (
@@ -515,6 +529,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
                 f"url={AI_API_URL} body={error_body[:1200]}",
                 flush=True,
             )
+            mark_openai_status("http_error", f"HTTP {exc.code}: {error_body}")
             if exc.code < 500 or attempt == 1:
                 return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -524,6 +539,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
                 f"detail={exc}",
                 flush=True,
             )
+            mark_openai_status("request_error", f"{type(exc).__name__}: {exc}")
             if attempt == 1:
                 return fallback_diagnose(text, photo_attached=photo_bytes is not None)
         time.sleep(1)
@@ -532,6 +548,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
             f"[relay] OpenAI unavailable after retries type={type(last_error).__name__} detail={last_error}",
             flush=True,
         )
+        mark_openai_status("unavailable", f"{type(last_error).__name__}: {last_error}")
         return fallback_diagnose(text, photo_attached=photo_bytes is not None)
 
     try:
@@ -546,6 +563,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
             f"[relay] OpenAI success source={response.source} matches={[match.name for match in response.matches]}",
             flush=True,
         )
+        mark_openai_status("success", json.dumps({"source": response.source, "matches": [match.name for match in response.matches]}, ensure_ascii=False))
         return response
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
         snippet = ""
@@ -557,6 +575,7 @@ def call_openai(text: str, photo_bytes: bytes | None = None, content_type: str |
             f"[relay] OpenAI parse error type={type(exc).__name__} detail={exc} body={snippet}",
             flush=True,
         )
+        mark_openai_status("parse_error", f"{type(exc).__name__}: {exc}; body={snippet}")
         return fallback_diagnose(text, photo_attached=photo_bytes is not None)
 
 
@@ -578,10 +597,12 @@ app = FastAPI(title="Mast OK External AI Relay")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
+        "relay_version": RELAY_VERSION,
         "ai_configured": bool(AI_API_KEY),
         "catalog_services": len(FLAT_CATALOG),
         "ai_model": AI_MODEL,
         "max_upload_mb": MAX_UPLOAD_MB,
+        "last_openai_status": LAST_OPENAI_STATUS,
     }
 
 
